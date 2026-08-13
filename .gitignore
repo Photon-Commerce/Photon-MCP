@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+credentials
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+**/.claude/settings.local.json
+.DS_Store
+Thumbs.db
+*.md
+!README.md
