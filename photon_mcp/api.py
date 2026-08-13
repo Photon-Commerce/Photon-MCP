@@ -38,6 +38,16 @@ CLASSIFIER_DOCTYPES = {
     "check", "statement", "bol", "invoice-commercial",
 }
 
+CLASSIFIER_TO_EXTRACTION_DOCTYPE = {
+    "invoice": "invoice",
+    "receipt": "receipt-expense",
+    "check": "check",
+    "remittance": "remittance",
+    "statement": "statement",
+    "bill-utility": "bill-utility",
+    "bol": "bol",
+}
+
 BULKY_FIELDS = ("Raw_Text", "raw_text", "RawText")
 
 
@@ -111,6 +121,13 @@ def resolve_allowed_dirs() -> list[Path]:
     if not raw:
         return []
     return [Path(p).expanduser().resolve() for p in raw.split(os.pathsep) if p.strip()]
+
+
+def suggested_doctype(detected: Any) -> str | None:
+    key = str(detected or "").strip().lower()
+    if key in EXTRACTION_DOCTYPES:
+        return key
+    return CLASSIFIER_TO_EXTRACTION_DOCTYPE.get(key)
 
 
 def strip_bulky_fields(payload: Any) -> Any:
@@ -291,7 +308,10 @@ class PhotonClient:
 
     def add_line_item(self, photon_key: str, fields: dict[str, Any]) -> Any:
         return self._request(
-            "POST", "/api/v4/line-items", params={"photon_key": photon_key}, json_body=fields
+            "POST",
+            "/api/v4/update/line-items",
+            params={"photon_key": photon_key},
+            json_body=fields,
         )
 
     def update_line_item(self, photon_key: str, line_item_id: str, fields: dict[str, Any]) -> Any:

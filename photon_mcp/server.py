@@ -9,6 +9,7 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
+from photon_mcp import api
 from photon_mcp.api import (
     CLASSIFIER_DOCTYPES,
     EXTRACTION_DOCTYPES,
@@ -70,17 +71,34 @@ def _fail(exc: Exception) -> dict[str, Any]:
     return {"ok": False, "error": str(exc)}
 
 
+CORRECTION_UNAVAILABLE_HINT = (
+    "Editing extractions is enabled per account. Ask the user to contact "
+    "support@photoncommerce.com to have it turned on. Retrying, or reformatting the "
+    "photon_key, will not change the outcome."
+)
+
+
+def _correction_fail(exc: Exception) -> dict[str, Any]:
+    result = _fail(exc)
+    result.setdefault("hint", CORRECTION_UNAVAILABLE_HINT)
+    return result
+
+
 def _extraction_result(payload: Any) -> dict[str, Any]:
     body = payload.get("data") if isinstance(payload, dict) else None
     photon_key = None
+    doc_path = None
     if isinstance(payload, dict):
         photon_key = payload.get("photon_key")
+        doc_path = payload.get("doc_path")
     if isinstance(body, dict) and not photon_key:
         photon_key = body.get("photon_key") or body.get("Photon_Key")
 
     result: dict[str, Any] = {"ok": True}
     if photon_key:
         result["photon_key"] = photon_key
+    if doc_path:
+        result["doc_path"] = doc_path
     if body:
         result["status"] = "extracted"
         result["extraction"] = strip_bulky_fields(body)
@@ -123,9 +141,9 @@ def list_document_types() -> dict[str, Any]:
         "min_file_bytes": MIN_FILE_BYTES,
         "max_file_bytes": MAX_FILE_BYTES,
         "note": (
-            "If no doctype is passed, the API treats the document as an invoice. "
-            "The classifier reports 'receipt' and 'invoice-commercial', which are not "
-            "in the documented extraction list; use 'receipt-expense' for receipts."
+            "If no doctype is passed, the document is treated as an invoice. The "
+            "classifier uses its own labels, so prefer the suggested_doctype that "
+            "classify_document returns; 'receipt-expense' is the key for receipts."
         ),
     }
 
@@ -154,7 +172,8 @@ def process_document(
     reference_id: str | None = None,
 ) -> dict[str, Any]:
     try:
-        payload = get_client().extract(
+        client = get_client()
+        payload = client.extract(
             file_path=file_path,
             url=url,
             doctype=doctype,
@@ -165,7 +184,24 @@ def process_document(
         )
     except (PhotonAPIError, PhotonConfigError) as exc:
         return _fail(exc)
-    return _extraction_result(payload)
+    result = _extraction_result(payload)
+    if result.get("status") == "queued" and result.get("photon_key"):
+        _attach_ready_extraction(client, result)
+    return result
+
+
+def _attach_ready_extraction(client: PhotonClient, result: dict[str, Any]) -> None:
+    try:
+        follow_up = client.get_json(result["photon_key"])
+    except (PhotonAPIError, PhotonConfigError):
+        return
+    body = follow_up.get("data") if isinstance(follow_up, dict) else None
+    if not body:
+        return
+    result["status"] = "extracted"
+    result["extraction"] = strip_bulky_fields(body)
+    result.pop("note", None)
+    result.pop("response", None)
 
 
 @server.tool(
@@ -204,9 +240,9 @@ def get_extraction(photon_key: str) -> dict[str, Any]:
     name="classify_document",
     title="Detect a document's type",
     description=(
-        "Detect what kind of document a file is before extracting it. Supply exactly "
-        "one of file_path or url. Returns a document_type suitable for passing to "
-        "process_document as doctype."
+        "Detect what kind of document a file is before extracting it. Prefer file_path, "
+        "which is the most reliable input for this endpoint. Returns the detected type "
+        "plus suggested_doctype, the key to pass to process_document."
     ),
     annotations=WRITES,
 )
@@ -214,9 +250,27 @@ def classify_document(file_path: str | None = None, url: str | None = None) -> d
     try:
         payload = get_client().classify(file_path=file_path, url=url)
     except (PhotonAPIError, PhotonConfigError) as exc:
-        return _fail(exc)
-    data = payload.get("data") if isinstance(payload, dict) else None
-    return {"ok": True, "result": data if data else payload}
+        failure = _fail(exc)
+        if url and not file_path:
+            failure["hint"] = (
+                "Classification works most reliably from a local file. Download the "
+                "document and pass file_path instead."
+            )
+        return failure
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    detected = (data or {}).get("document_type")
+    result: dict[str, Any] = {"ok": True, "document_type": detected}
+    suggestion = api.suggested_doctype(detected)
+    if suggestion:
+        result["suggested_doctype"] = suggestion
+    else:
+        result["note"] = (
+            f"{detected!r} has no matching extraction doctype; process_document will "
+            "treat the document as an invoice unless you pass another doctype."
+        )
+    if (data or {}).get("photon_key"):
+        result["photon_key"] = data["photon_key"]
+    return result
 
 
 @server.tool(
@@ -255,7 +309,7 @@ def correct_fields(photon_key: str, fields: dict[str, Any]) -> dict[str, Any]:
     try:
         payload = get_client().update_fields(photon_key, fields)
     except (PhotonAPIError, PhotonConfigError) as exc:
-        return _fail(exc)
+        return _correction_fail(exc)
     return {"ok": True, "photon_key": photon_key, "updated": sorted(fields), "response": payload}
 
 
@@ -275,7 +329,7 @@ def add_line_item(photon_key: str, fields: dict[str, Any]) -> dict[str, Any]:
     try:
         payload = get_client().add_line_item(photon_key, fields)
     except (PhotonAPIError, PhotonConfigError) as exc:
-        return _fail(exc)
+        return _correction_fail(exc)
     return {"ok": True, "photon_key": photon_key, "response": payload}
 
 
@@ -297,7 +351,7 @@ def correct_line_item(
     try:
         payload = get_client().update_line_item(photon_key, line_item_id, fields)
     except (PhotonAPIError, PhotonConfigError) as exc:
-        return _fail(exc)
+        return _correction_fail(exc)
     return {
         "ok": True,
         "photon_key": photon_key,
@@ -321,7 +375,7 @@ def delete_line_item(photon_key: str, line_item_id: str) -> dict[str, Any]:
     try:
         payload = get_client().delete_line_item(photon_key, line_item_id)
     except (PhotonAPIError, PhotonConfigError) as exc:
-        return _fail(exc)
+        return _correction_fail(exc)
     return {
         "ok": True,
         "photon_key": photon_key,
@@ -335,8 +389,8 @@ def delete_line_item(photon_key: str, line_item_id: str) -> dict[str, Any]:
     title="Save a processed document to disk",
     description=(
         "Download the original file for a processed document and write it into "
-        "directory. doc_path comes from the Doc_Path field of an extraction. Returns "
-        "the path written. The directory must already exist."
+        "directory. doc_path is returned by process_document alongside the "
+        "photon_key. Returns the path written. The directory must already exist."
     ),
     annotations=WRITES,
 )
