@@ -21,31 +21,17 @@ SUPPORTED_SUFFIXES = {
     ".doc", ".docx", ".xls", ".xlsx", ".html", ".txt",
 }
 
-EXTRACTION_DOCTYPES = {
+DOCTYPES = {
     "invoice": "Invoice",
-    "receipt-expense": "Receipt / expense",
+    "receipt": "Receipt",
     "check": "Check",
+    "stub": "Pay stub",
     "remittance": "Remittance",
     "statement": "Bank or card statement",
     "bill-utility": "Utility bill (electric, gas, water, internet, voice)",
     "bol": "Bill of lading",
-    "hbl": "House bill of lading",
-    "mbl": "Master bill of lading",
-}
-
-CLASSIFIER_DOCTYPES = {
-    "invoice", "receipt", "bill-utility", "remittance",
-    "check", "statement", "bol", "invoice-commercial",
-}
-
-CLASSIFIER_TO_EXTRACTION_DOCTYPE = {
-    "invoice": "invoice",
-    "receipt": "receipt-expense",
-    "check": "check",
-    "remittance": "remittance",
-    "statement": "statement",
-    "bill-utility": "bill-utility",
-    "bol": "bol",
+    "shippinglabel": "Shipping label",
+    "invoice-commercial": "Commercial invoice",
 }
 
 BULKY_FIELDS = ("Raw_Text", "raw_text", "RawText")
@@ -75,7 +61,7 @@ class Credentials:
     password: str
 
     @classmethod
-    def from_env(cls) -> "Credentials":
+    def from_env(cls) -> Credentials:
         names = {
             "client_id": "PHOTON_CLIENT_ID",
             "secret_key": "PHOTON_SECRET_KEY",
@@ -125,9 +111,7 @@ def resolve_allowed_dirs() -> list[Path]:
 
 def suggested_doctype(detected: Any) -> str | None:
     key = str(detected or "").strip().lower()
-    if key in EXTRACTION_DOCTYPES:
-        return key
-    return CLASSIFIER_TO_EXTRACTION_DOCTYPE.get(key)
+    return key if key in DOCTYPES else None
 
 
 def strip_bulky_fields(payload: Any) -> Any:
@@ -172,11 +156,13 @@ class PhotonClient:
         size = path.stat().st_size
         if size < MIN_FILE_BYTES:
             raise PhotonConfigError(
-                f"{path.name} is {size} bytes; the Photon API rejects files under {MIN_FILE_BYTES} bytes."
+                f"{path.name} is {size} bytes; the Photon API rejects files under "
+                f"{MIN_FILE_BYTES} bytes."
             )
         if size > MAX_FILE_BYTES:
             raise PhotonConfigError(
-                f"{path.name} is {size} bytes; the Photon API rejects files over {MAX_FILE_BYTES} bytes."
+                f"{path.name} is {size} bytes; the Photon API rejects files over "
+                f"{MAX_FILE_BYTES} bytes."
             )
         if path.suffix.lower() not in SUPPORTED_SUFFIXES:
             supported = ", ".join(sorted(SUPPORTED_SUFFIXES))
@@ -268,8 +254,8 @@ class PhotonClient:
     ) -> Any:
         if bool(file_path) == bool(url):
             raise PhotonConfigError("Pass exactly one of file_path or url.")
-        if doctype and doctype not in EXTRACTION_DOCTYPES:
-            valid = ", ".join(sorted(EXTRACTION_DOCTYPES))
+        if doctype and doctype not in DOCTYPES:
+            valid = ", ".join(sorted(DOCTYPES))
             raise PhotonConfigError(f"Unknown doctype {doctype!r}. Valid values: {valid}")
         params = {
             "url": url,

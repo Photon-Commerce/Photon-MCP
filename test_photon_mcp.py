@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import httpx
 import pytest
@@ -96,8 +97,13 @@ class TestConfiguration:
     def test_allowed_dirs_splits_and_resolves(self, monkeypatch, tmp_path):
         a, b = tmp_path / "a", tmp_path / "b"
         a.mkdir(), b.mkdir()
-        monkeypatch.setenv("PHOTON_ALLOWED_DIRS", f"{a}:{b}")
+        monkeypatch.setenv("PHOTON_ALLOWED_DIRS", f"{a}{os.pathsep}{b}")
         assert resolve_allowed_dirs() == [a.resolve(), b.resolve()]
+
+    def test_allowed_dirs_does_not_split_a_windows_drive_letter(self, monkeypatch):
+        monkeypatch.setattr(os, "pathsep", ";")
+        monkeypatch.setenv("PHOTON_ALLOWED_DIRS", r"C:\docs;D:\scans")
+        assert len(resolve_allowed_dirs()) == 2
 
 
 class TestStripBulkyFields:
@@ -218,7 +224,9 @@ class TestExtractRequest:
 
 class TestErrorHandling:
     def test_maps_api_error_message(self):
-        handler = json_route({"message": "Authentication failed. Please check your credentials"}, 401)
+        handler = json_route(
+            {"message": "Authentication failed. Please check your credentials"}, 401
+        )
         with pytest.raises(PhotonAPIError) as excinfo:
             build_client(handler).get_json("k")
         assert excinfo.value.status_code == 401
@@ -314,7 +322,7 @@ class TestQueuedFollowUp:
 
 
 class TestClassify:
-    def test_maps_detected_type_to_an_extraction_doctype(self, monkeypatch):
+    def test_normalizes_detected_type_to_a_doctype_key(self, monkeypatch):
         for name in ENV_VARS:
             monkeypatch.setenv(name, "x")
         server._client = build_client(json_route({"data": {"document_type": "Invoice"}}))
@@ -322,19 +330,21 @@ class TestClassify:
         assert result["document_type"] == "Invoice"
         assert result["suggested_doctype"] == "invoice"
 
-    def test_receipt_maps_to_the_extraction_spelling(self):
-        assert api.suggested_doctype("receipt") == "receipt-expense"
-        assert api.suggested_doctype("RECEIPT") == "receipt-expense"
+    def test_detection_is_case_insensitive(self):
+        assert api.suggested_doctype("receipt") == "receipt"
+        assert api.suggested_doctype("RECEIPT") == "receipt"
+        assert api.suggested_doctype("Invoice-Commercial") == "invoice-commercial"
+        assert api.suggested_doctype("ShippingLabel") == "shippinglabel"
 
     def test_unmappable_type_is_flagged_rather_than_guessed(self, monkeypatch):
         for name in ENV_VARS:
             monkeypatch.setenv(name, "x")
         server._client = build_client(
-            json_route({"data": {"document_type": "invoice-commercial"}})
+            json_route({"data": {"document_type": "passport"}})
         )
         result = server.classify_document(url="https://e.test/a.pdf")
         assert "suggested_doctype" not in result
-        assert "no matching extraction doctype" in result["note"]
+        assert "not a recognized doctype" in result["note"]
 
     def test_url_failure_suggests_file_path(self, monkeypatch):
         for name in ENV_VARS:
@@ -422,7 +432,7 @@ class TestToolLayer:
     def test_list_document_types_needs_no_credentials(self):
         result = server.list_document_types()
         assert result["ok"] is True
-        assert "invoice" in result["extraction_doctypes"]
+        assert "invoice" in result["doctypes"]
         assert result["max_file_bytes"] == api.MAX_FILE_BYTES
 
 

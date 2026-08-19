@@ -11,8 +11,7 @@ from mcp.types import ToolAnnotations
 
 from photon_mcp import api
 from photon_mcp.api import (
-    CLASSIFIER_DOCTYPES,
-    EXTRACTION_DOCTYPES,
+    DOCTYPES,
     MAX_FILE_BYTES,
     MIN_FILE_BYTES,
     SUPPORTED_SUFFIXES,
@@ -124,9 +123,9 @@ def _extraction_result(payload: Any) -> dict[str, Any]:
     name="list_document_types",
     title="List document types",
     description=(
-        "List the document type keys the Photon Commerce API accepts, the types its "
-        "classifier can detect, the supported file formats, and the file size limits. "
-        "Call this before process_document when unsure which doctype to pass. "
+        "List the document type keys the Photon Commerce API accepts for both "
+        "extraction and classification, the supported file formats, and the file size "
+        "limits. Call this before process_document when unsure which doctype to pass. "
         "Makes no API call and needs no credentials."
     ),
     annotations=LOCAL_ONLY,
@@ -134,16 +133,15 @@ def _extraction_result(payload: Any) -> dict[str, Any]:
 def list_document_types() -> dict[str, Any]:
     return {
         "ok": True,
-        "extraction_doctypes": EXTRACTION_DOCTYPES,
-        "classifier_doctypes": sorted(CLASSIFIER_DOCTYPES),
+        "doctypes": DOCTYPES,
         "default_doctype": "invoice",
         "supported_file_types": sorted(SUPPORTED_SUFFIXES),
         "min_file_bytes": MIN_FILE_BYTES,
         "max_file_bytes": MAX_FILE_BYTES,
         "note": (
-            "If no doctype is passed, the document is treated as an invoice. The "
-            "classifier uses its own labels, so prefer the suggested_doctype that "
-            "classify_document returns; 'receipt-expense' is the key for receipts."
+            "If no doctype is passed, the document is treated as an invoice. "
+            "classify_document reports types from this same set, so its "
+            "suggested_doctype can be passed straight to process_document."
         ),
     }
 
@@ -265,7 +263,7 @@ def classify_document(file_path: str | None = None, url: str | None = None) -> d
         result["suggested_doctype"] = suggestion
     else:
         result["note"] = (
-            f"{detected!r} has no matching extraction doctype; process_document will "
+            f"{detected!r} is not a recognized doctype; process_document will "
             "treat the document as an invoice unless you pass another doctype."
         )
     if (data or {}).get("photon_key"):
@@ -408,7 +406,10 @@ def save_original_document(doc_path: str, directory: str) -> dict[str, Any]:
         allowed = ", ".join(str(root) for root in client.allowed_dirs)
         return {
             "ok": False,
-            "error": f"{target_dir} is outside the directories this server may write to ({allowed}).",
+            "error": (
+                f"{target_dir} is outside the directories this server may write to "
+                f"({allowed})."
+            ),
         }
     name = Path(doc_path).name or "document"
     destination = target_dir / name
